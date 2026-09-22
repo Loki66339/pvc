@@ -1,25 +1,87 @@
-name: CI
+name: RDP Hardened
 
-on: [push, workflow_dispatch]
+on:
+  push:
+  workflow_dispatch:
 
 jobs:
   build:
-
     runs-on: windows-latest
 
     steps:
-    - name: Download
-      run: Invoke-WebRequest https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-windows-amd64.zip -OutFile ngrok.zip
-    - name: Extract
-      run: Expand-Archive ngrok.zip
-    - name: Auth
-      run: .\ngrok\ngrok.exe authtoken $Env:NGROK_AUTH_TOKEN
-      env:
-        NGROK_AUTH_TOKEN: ${{ secrets.NGROK_AUTH_TOKEN }}
-    - name: Enable TS
-      run: Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server'-name "fDenyTSConnections" -Value 0
-    - run: Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
-    - run: Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -name "UserAuthentication" -Value 1
-    - run: Set-LocalUser -Name "runneradmin" -Password (ConvertTo-SecureString -AsPlainText "P@ssw0rd!" -Force)
-    - name: Create Tunnel
-      run: .\ngrok\ngrok.exe tcp 3389
+      # ============================================
+      # 1. DOWNLOAD NGROK
+      # ============================================
+      - name: Download ngrok
+        run: Invoke-WebRequest https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-windows-amd64.zip -OutFile ngrok.zip
+
+      - name: Extract ngrok
+        run: Expand-Archive ngrok.zip -Force
+
+      - name: Auth ngrok
+        run: .\ngrok\ngrok.exe authtoken $Env:NGROK_AUTH_TOKEN
+        env:
+          NGROK_AUTH_TOKEN: ${{ secrets.NGROK_AUTH_TOKEN }}
+
+      # ============================================
+      # 2. ENABLE RDP WITH NLA
+      # ============================================
+      - name: Enable RDP and NLA
+        shell: powershell
+        run: |
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 1
+          Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
+          Write-Host "RDP + NLA enabled"
+
+      # ============================================
+      # 3. CHANGE RDP PORT TO 54321
+      # ============================================
+      - name: Change RDP Port
+        shell: powershell
+        run: |
+          $NewPort = 61249
+          Set-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "PortNumber" -Value $NewPort
+          New-NetFirewallRule -DisplayName "RDP Custom Port $NewPort" -Direction Inbound -Protocol TCP -LocalPort $NewPort -Action Allow
+          Write-Host "RDP port changed to $NewPort"
+
+      # ============================================
+      # 4. SET STRONG PASSWORD
+      # ============================================
+      - name: Set Strong Password
+        shell: powershell
+        run: |
+          $NewPassword = "MK$m9473PSi0p$"
+          Set-LocalUser -Name "runneradmin" -Password (ConvertTo-SecureString -AsPlainText $NewPassword -Force)
+          Write-Host "Password updated for runneradmin"
+
+      # ============================================
+      # 5. SECURITY HARDENING
+      # ============================================
+      - name: Enable Login Auditing
+        shell: powershell
+        run: |
+          auditpol /set /subcategory:"Logon" /success:enable /failure:enable
+          Write-Host "Login auditing enabled"
+
+      - name: Set Account Lockout Policy
+        shell: powershell
+        run: |
+          net accounts /lockoutthreshold:5 /lockoutduration:30 /lockoutwindow:30
+          Write-Host "Lockout set: 5 attempts -> 30 min lock"
+
+      # ============================================
+      # 6. RESTART RDP SERVICE
+      # ============================================
+      - name: Restart RDP Service
+        shell: powershell
+        run: |
+          Restart-Service -Name TermService -Force
+          Start-Sleep -Seconds 5
+          Write-Host "RDP service restarted on port 61249"
+
+      # ============================================
+      # 7. START NGROK TUNNEL ON NEW PORT
+      # ============================================
+      - name: Create Tunnel
+        run: .\ngrok\ngrok.exe tcp 61249
